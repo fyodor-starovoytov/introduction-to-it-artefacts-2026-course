@@ -1,7 +1,7 @@
 # Introduction-to-IT-Artefacts-2026-Course
 ## Getting started in IT
 
-One of the first courses, where I learnt basics of different areas of IT, before actually diving into them. Areas of IT like git, OSI network layers, debugging, writing documentations and etc.
+One of the first courses, where I learnt basics of different areas in IT, before actually diving into them. Areas of IT like git, OSI network layers, debugging, writing documentations and etc.
 
 ## Description
 Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
