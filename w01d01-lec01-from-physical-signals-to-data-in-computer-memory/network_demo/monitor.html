@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packet Monitor</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="station.css">
+</head>
+<body>
+
+<header>
+  <h1><span class="role mon">the wire</span>What is actually crossing the network</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="state">connecting…</span></div>
+</header>
+
+<main>
+
+  <div class="card">
+    <h2>Packets arriving, one block per packet</h2>
+    <p class="why">Each block is one packet, newest on the right. Height is how loud that 20 ms of
+      speech was. A red gap is a packet that never arrived.</p>
+    <canvas id="flow" style="height:90px"></canvas>
+    <div class="metrics" style="margin-top:14px">
+      <div class="metric"><div class="v" id="mPps">—</div><div class="k">packets per second</div></div>
+      <div class="metric"><div class="v" id="mRate">—</div><div class="k">total, kbit/s</div></div>
+      <div class="metric"><div class="v" id="mVoice">—</div><div class="k">of which voice, kbit/s</div></div>
+      <div class="metric bad"><div class="v" id="mLost">0</div><div class="k">gaps in sequence</div></div>
+      <div class="metric"><div class="v" id="mJitter">—</div><div class="k">jitter, ms</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>The last packet, byte by byte</h2>
+    <p class="why">Eight bytes of header, then the voice. Nothing else is sent — no words, no sound,
+      just this.</p>
+    <div class="scroller">
+      <table>
+        <tr><th>bytes</th><th>meaning</th><th>value</th></tr>
+        <tr><td>0</td><td>magic number</td><td id="fMagic">—</td></tr>
+        <tr><td>1</td><td>bits per sample</td><td id="fBits">—</td></tr>
+        <tr><td>2–3</td><td>sequence number</td><td id="fSeq">—</td></tr>
+        <tr><td>4–5</td><td>sampling rate</td><td id="fFs">—</td></tr>
+        <tr><td>6–7</td><td>samples in this packet</td><td id="fCount">—</td></tr>
+        <tr><td>8…</td><td>the voice, as integers</td><td id="fSamples">—</td></tr>
+      </table>
+    </div>
+    <p class="tip" style="margin-top:10px">raw bytes on the wire: <code id="fHex">—</code></p>
+  </div>
+
+  <div class="card">
+    <h2>Packet log</h2>
+    <div class="scroller">
+      <table>
+        <thead><tr>
+          <th>seq</th><th>arrived</th><th>gap</th><th>bytes</th><th>rate</th><th>bits</th>
+          <th>first samples</th>
+        </tr></thead>
+        <tbody id="log"></tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script src="wire.js"></script>
+<script>
+"use strict";
+
+const history = [];              // {level, lost} per packet, for the flow strip
+const MAXBLOCKS = 220;
+let received = 0, lost = 0, bytes = 0, voiceBytes = 0;
+let lastSeq = null, lastArrival = 0, lastGap = 0, jitter = 0;
+let lastT = performance.now(), lastRecv = 0, lastBytes = 0, lastVoice = 0;
+
+Wire.connect("monitor", onPacket, (s) => {
+  document.getElementById("state").textContent = s;
+  document.getElementById("dot").classList.toggle("on", s === "connected");
+});
+
+function onPacket(p) {
+  received++; bytes += p.bytes; voiceBytes += p.bytes - Wire.HEADER;
+
+  if (lastSeq !== null) {
+    const expected = (lastSeq + 1) & 0xffff;
+    if (p.seq !== expected) {
+      const gap = (p.seq - expected) & 0xffff;
+      if (gap < 1000) {
+        lost += gap;
+        for (let i = 0; i < Math.min(gap, 20); i++) history.push({ level: 0, lost: true });
+      }
+    }
+  }
+  lastSeq = p.seq;
+
+  const now = performance.now();
+  if (lastArrival) {
+    const gap = now - lastArrival;
+    jitter = 0.9 * jitter + 0.1 * Math.abs(gap - lastGap);
+    lastGap = gap;
+  }
+  const sinceLast = lastArrival ? now - lastArrival : 0;
+  lastArrival = now;
+
+  // how loud this packet was, so the strip looks like speech
+  let sum = 0;
+  const peak = Math.pow(2, p.bits - 1);
+  for (let i = 0; i < p.samples.length; i++) sum += (p.samples[i] / peak) ** 2;
+  history.push({ level: Math.sqrt(sum / p.samples.length), lost: false });
+  while (history.length > MAXBLOCKS) history.shift();
+
+  // the anatomy panel
+  document.getElementById("fMagic").textContent = "0xA5";
+  document.getElementById("fBits").textContent = p.bits;
+  document.getElementById("fSeq").textContent = p.seq;
+  document.getElementById("fFs").textContent = p.fs.toLocaleString() + " Hz";
+  document.getElementById("fCount").textContent =
+    `${p.count}  (= ${(1000 * p.count / p.fs).toFixed(0)} ms of speech)`;
+  document.getElementById("fSamples").textContent =
+    Array.from(p.samples.slice(0, 10)).join(", ") + " …";
+  document.getElementById("fHex").textContent = p.hex + " …";
+
+  // the log
+  const tbody = document.getElementById("log");
+  const row = tbody.insertRow(0);
+  row.innerHTML =
+    `<td>${p.seq}</td><td>${new Date().toLocaleTimeString()}</td>` +
+    `<td>${sinceLast.toFixed(0)} ms</td><td>${p.bytes}</td>` +
+    `<td>${(p.fs / 1000).toFixed(1)} kHz</td><td>${p.bits}</td>` +
+    `<td>${Array.from(p.samples.slice(0, 8)).join(" ")}</td>`;
+  while (tbody.rows.length > 14) tbody.deleteRow(tbody.rows.length - 1);
+}
+
+function tick() {
+  // the flow strip
+  const canvas = document.getElementById("flow");
+  const g = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const style = getComputedStyle(document.body);
+  const cool = style.getPropertyValue("--digital").trim();
+  const bad = style.getPropertyValue("--warn").trim();
+  const bw = w / MAXBLOCKS;
+  history.forEach((p, i) => {
+    const x = i * bw;
+    if (p.lost) {
+      g.fillStyle = bad; g.fillRect(x, 4, Math.max(1, bw - 1), h - 8);
+    } else {
+      const bh = Math.max(2, Math.min(h - 8, p.level * h * 2.2));
+      g.fillStyle = cool; g.fillRect(x, (h - bh) / 2, Math.max(1, bw - 1), bh);
+    }
+  });
+
+  const now = performance.now(), dt = (now - lastT) / 1000;
+  if (dt >= 0.5) {
+    document.getElementById("mPps").textContent = ((received - lastRecv) / dt).toFixed(0);
+    document.getElementById("mRate").textContent = ((bytes - lastBytes) * 8 / 1000 / dt).toFixed(1);
+    document.getElementById("mVoice").textContent = ((voiceBytes - lastVoice) * 8 / 1000 / dt).toFixed(1);
+    document.getElementById("mLost").textContent = lost.toLocaleString();
+    document.getElementById("mJitter").textContent = jitter.toFixed(1);
+    lastRecv = received; lastBytes = bytes; lastVoice = voiceBytes; lastT = now;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

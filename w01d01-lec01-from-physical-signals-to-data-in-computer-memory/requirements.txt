@@ -1,0 +1,7 @@
+# Lecture 1 - Signals & Systems
+# Deliberately tiny: the whole lecture runs on arrays of numbers.
+
+numpy>=1.24          # required - the array arithmetic
+pillow>=10.0         # required for the image demo and Lab 1D (reads your photo)
+matplotlib>=3.7      # optional - only for the figures; every script prints
+                     # its results as numbers whether or not this is installed

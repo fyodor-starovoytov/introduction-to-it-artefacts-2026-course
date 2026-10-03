@@ -1,0 +1,3 @@
+1. For easier navigation when inspecting the code. Person who has never seen the code can easily find where the main function is located, instead of having to scroll across one enormous file,
+2. README.md is important so that a user can start the program and check if it's giving right result. Also for another developer README.md makes it easier to navigate through the code.
+3. So everyone can check if the program behaves correctly and gives the right result

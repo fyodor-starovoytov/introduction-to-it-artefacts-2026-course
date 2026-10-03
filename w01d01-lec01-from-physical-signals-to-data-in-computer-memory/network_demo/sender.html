@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Sender</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="station.css">
+</head>
+<body>
+
+<header>
+  <h1><span class="role src">source</span>This computer is the microphone</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="state">connecting…</span></div>
+</header>
+
+<main>
+
+  <div class="card">
+    <div class="controls">
+      <button id="start" class="primary">▶ Start sending</button>
+
+      <label class="ctl"><span>what we digitize</span>
+        <select id="source">
+          <option value="mic">this computer's microphone</option>
+          <option value="voice">a synthetic voice (no mic needed)</option>
+        </select>
+      </label>
+
+      <label class="ctl"><span>sampling rate <b id="fsVal">8000 Hz</b></span>
+        <input type="range" id="fs" min="4000" max="24000" step="1000" value="8000"></label>
+
+      <label class="ctl"><span>bits per sample <b id="bitsVal">8</b></span>
+        <input type="range" id="bits" min="4" max="16" step="4" value="8"></label>
+
+      <label class="ctl"><span>packet length <b id="msVal">20 ms</b></span>
+        <input type="range" id="ms" min="10" max="100" step="10" value="20"></label>
+    </div>
+    <p class="why" style="margin-top:12px">
+      20 ms packets at 8000 Hz and 8 bits is not an arbitrary choice — it is exactly what a
+      telephone call has used for decades.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>What this room sounds like</h2>
+    <p class="why">Continuous air pressure, picked up by the microphone. Nothing digital yet.</p>
+    <canvas id="scopeIn"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>What is leaving this computer</h2>
+    <p class="why">Sampled, quantized, packed into 8-byte-header packets, and handed to the network.
+      From here on, your voice is arithmetic.</p>
+    <div class="metrics">
+      <div class="metric warm"><div class="v" id="mPackets">0</div><div class="k">packets sent</div></div>
+      <div class="metric"><div class="v" id="mRate">—</div><div class="k">payload, kbit/s</div></div>
+      <div class="metric"><div class="v" id="mSize">—</div><div class="k">bytes per packet</div></div>
+      <div class="metric"><div class="v" id="mPps">—</div><div class="k">packets per second</div></div>
+      <div class="metric"><div class="v" id="mOverhead">—</div><div class="k">header overhead</div></div>
+    </div>
+    <p class="tip" id="tip" style="margin-top:12px"></p>
+  </div>
+
+</main>
+
+<script src="wire.js"></script>
+<script>
+"use strict";
+
+const P = { source: "mic", fs: 8000, bits: 8, ms: 20 };
+const HW = { rate: 48000, block: 2048 };
+let ctx = null, node = null, micSource = null, phase = 0, vibrato = 0;
+let seq = 0, sent = 0, bytesSent = 0, lastSent = 0, lastBytes = 0, lastT = performance.now();
+let pending = [];                       // samples waiting to fill the current packet
+const inView = new Float32Array(2048);
+
+const link = Wire.connect("sender", null, (s) => {
+  document.getElementById("state").textContent = s;
+  document.getElementById("dot").classList.toggle("on", s === "connected");
+});
+const drawIn = Wire.scope(document.getElementById("scopeIn"));
+
+// --- the same synthetic voice as the scope demo, for rooms with no microphone
+function synthVoice(out, n) {
+  const f0 = 120 + 6 * Math.sin(vibrato);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let h = 1; h <= 12; h++) {
+      const f = f0 * h;
+      const formant = Math.exp(-Math.pow((f - 700) / 480, 2)) +
+                      0.7 * Math.exp(-Math.pow((f - 1220) / 560, 2)) +
+                      0.25 * Math.exp(-Math.pow((f - 2600) / 900, 2));
+      s += formant * Math.sin(2 * Math.PI * f * (phase + i) / HW.rate) / h;
+    }
+    out[i] = 0.55 * s;
+  }
+  phase += n; vibrato += (n / HW.rate) * 2 * Math.PI * 5;
+}
+
+// --- capture -> sample -> quantize -> packet -------------------------------
+function onAudio(e) {
+  const input = e.inputBuffer.getChannelData(0);
+  const n = input.length;
+  const analog = new Float32Array(n);
+
+  if (P.source === "voice") synthVoice(analog, n);
+  else analog.set(input);
+  inView.set(analog.subarray(0, Math.min(n, inView.length)));
+
+  // sample: keep one in every `factor` of the hardware's own samples
+  const factor = Math.max(1, Math.round(HW.rate / P.fs));
+  const fs = Math.round(HW.rate / factor);
+
+  // quantize: to a signed integer of P.bits bits
+  const peak = Math.pow(2, P.bits - 1) - 1;
+  for (let i = 0; i < n; i += factor) {
+    let v = Math.round(analog[i] * peak);
+    pending.push(Math.max(-peak - 1, Math.min(peak, v)));
+  }
+
+  // packetize: fixed number of milliseconds per packet, like a real phone call
+  const perPacket = Math.round(fs * P.ms / 1000);
+  while (pending.length >= perPacket) {
+    const samples = pending.splice(0, perPacket);
+    const buf = Wire.encodePacket({ seq: seq++, fs, bits: P.bits, samples });
+    link.send(buf);
+    sent++; bytesSent += buf.byteLength;
+  }
+}
+
+async function start() {
+  if (ctx) { await ctx.resume(); return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  HW.rate = ctx.sampleRate;
+
+  node = ctx.createScriptProcessor(HW.block, 1, 1);
+  node.onaudioprocess = onAudio;
+  const silent = ctx.createGain();
+  silent.gain.value = 0;                       // we send, we do not play
+  node.connect(silent).connect(ctx.destination);
+
+  if (P.source === "mic") await useMic();
+  document.getElementById("start").textContent = "● sending";
+  document.getElementById("start").classList.remove("primary");
+}
+
+async function useMic() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    micSource = ctx.createMediaStreamSource(stream);
+    micSource.connect(node);
+  } catch (err) {
+    alert("No microphone: " + err.message +
+      "\n\nOpen this page as http://localhost:8000/sender.html on the computer running relay.py — " +
+      "browsers only allow the microphone on localhost or https. " +
+      "Meanwhile, switch the source to the synthetic voice.");
+    document.getElementById("source").value = "voice";
+    P.source = "voice";
+  }
+}
+
+// --- readouts ---------------------------------------------------------------
+function tick() {
+  drawIn(inView, getComputedStyle(document.body).getPropertyValue("--analog").trim(), 1200);
+
+  const now = performance.now(), dt = (now - lastT) / 1000;
+  if (dt >= 0.5) {
+    const pps = (sent - lastSent) / dt;
+    const kbits = (bytesSent - lastBytes) * 8 / 1000 / dt;
+    const perPacket = Math.round(P.fs * P.ms / 1000);
+    const payloadBytes = perPacket * (P.bits > 8 ? 2 : 1);
+
+    document.getElementById("mPackets").textContent = sent.toLocaleString();
+    document.getElementById("mPps").textContent = pps.toFixed(0);
+    document.getElementById("mRate").textContent = kbits.toFixed(1);
+    document.getElementById("mSize").textContent = (payloadBytes + Wire.HEADER);
+    document.getElementById("mOverhead").textContent =
+      (100 * Wire.HEADER / (payloadBytes + Wire.HEADER)).toFixed(1) + "%";
+
+    const raw = P.fs * P.bits / 1000;
+    document.getElementById("tip").textContent =
+      `Sampling rate × bit depth = ${P.fs} × ${P.bits} = ${raw.toFixed(1)} kbit/s of voice, `
+      + `plus ${(8 * Wire.HEADER * 1000 / P.ms / 1000).toFixed(1)} kbit/s of headers because we send `
+      + `${(1000 / P.ms).toFixed(0)} packets every second. Longer packets waste fewer bytes on headers `
+      + `— and add delay to the conversation. That trade is why phone calls use 20 ms.`;
+
+    lastSent = sent; lastBytes = bytesSent; lastT = now;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// --- controls ---------------------------------------------------------------
+document.getElementById("start").addEventListener("click", start);
+document.getElementById("source").addEventListener("change", async (e) => {
+  P.source = e.target.value;
+  if (ctx && P.source === "mic" && !micSource) await useMic();
+});
+const bind = (id, fn) => document.getElementById(id).addEventListener("input", fn);
+bind("fs", e => { P.fs = +e.target.value; document.getElementById("fsVal").textContent = P.fs + " Hz"; pending = []; });
+bind("bits", e => { P.bits = +e.target.value; document.getElementById("bitsVal").textContent = P.bits; pending = []; });
+bind("ms", e => { P.ms = +e.target.value; document.getElementById("msVal").textContent = P.ms + " ms"; pending = []; });
+</script>
+</body>
+</html>

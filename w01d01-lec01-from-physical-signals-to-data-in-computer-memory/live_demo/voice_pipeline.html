@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Pipeline Scope</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Colour carries meaning here, and only two hues do any work:
+       AMBER  = the physical world, continuous, a voltage you could touch
+       BLUE   = numbers, discrete, a thing that can be copied exactly
+     The page warms up at the microphone, cools through the digital middle,
+     and warms again at the loudspeaker. Red is reserved for damage. */
+  :root {
+    --bg: #faf7f1;   --panel: #ffffff;  --ink: #17150f;   --muted: #6f695b;
+    --line: #e4dfd2; --grid: #f0ebe0;
+    --analog: #a4530b;   /* warm: air, voltage, the world */
+    --digital: #1f4bd8;  /* cool: integers, bits, the wire */
+    --warn: #ad2116;     /* only when something is actually broken */
+    --focus: #1f4bd8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #131109;   --panel: #1c1a12; --ink: #f2eee2;  --muted: #a09883;
+      --line: #302c20; --grid: #241f16;
+      --analog: #f2ad4e;
+      --digital: #86a8ff;
+      --warn: #ff9186;
+      --focus: #86a8ff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #131109;   --panel: #1c1a12; --ink: #f2eee2;  --muted: #a09883;
+    --line: #302c20; --grid: #241f16;
+    --analog: #f2ad4e;
+    --digital: #86a8ff;
+    --warn: #ff9186;
+    --focus: #86a8ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+    position: sticky; top: 0; background: var(--bg); z-index: 10;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  h1 small { font-weight: 400; color: var(--muted); margin-left: 8px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: center; margin-left: auto; }
+  .ctl { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+  .ctl > span { white-space: nowrap; }
+  .ctl b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 132px; accent-color: var(--digital); }
+  select, button {
+    font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--analog); border-color: var(--analog); color: var(--panel); font-weight: 600; }
+  button[aria-pressed="true"] { border-color: var(--digital); color: var(--digital); }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  main { padding: 16px 20px 60px; max-width: 1180px; margin: 0 auto; }
+  .stage {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 10px;
+  }
+  .stage h2 {
+    font-size: 13px; margin: 0 0 2px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--muted); font-weight: 650;
+  }
+  .stage .why { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+  .readout {
+    font-family: "IBM Plex Mono", Consolas, monospace; font-variant-numeric: tabular-nums;
+    color: var(--ink); font-weight: 500; font-size: 0.92em; text-transform: none; letter-spacing: 0;
+  }
+  .ctl b { font-family: "IBM Plex Mono", Consolas, monospace; }
+  canvas { width: 100%; height: 110px; display: block; }
+  .arrow { text-align: center; color: var(--muted); font-size: 18px; line-height: 1; margin: -4px 0 6px; }
+  .numbers {
+    font-family: "IBM Plex Mono", Consolas, monospace; font-size: 16px; color: var(--digital);
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+    overflow: hidden; white-space: nowrap; padding: 6px 0;
+  }
+  .bin { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .alert {
+    background: var(--warn); color: #fff; padding: 8px 12px; border-radius: 8px;
+    font-weight: 600; margin: 8px 0 0; display: none;
+  }
+  .alert.on { display: block; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+  .lane-label { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  footer { color: var(--muted); font-size: 13px; padding: 0 20px 40px; max-width: 1180px; margin: 0 auto; }
+  .legend { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .swatch-a, .swatch-d { width: 22px; height: 3px; border-radius: 2px; display: inline-block; }
+  .swatch-a { background: var(--analog); }
+  .swatch-d { background: var(--digital); }
+  kbd { font-family: inherit; background: var(--grid); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Voice → Numbers → Voice <small>Lecture 1, live</small></h1>
+  <div class="controls">
+    <button id="start" class="primary">▶ Start</button>
+
+    <label class="ctl"><span>source</span>
+      <select id="source">
+        <option value="voice">synthetic voice</option>
+        <option value="tone">test tone</option>
+        <option value="mic">microphone</option>
+      </select>
+    </label>
+
+    <label class="ctl" id="toneCtl"><span>tone <b id="toneVal">1200 Hz</b></span>
+      <input type="range" id="tone" min="100" max="8000" step="50" value="1200">
+    </label>
+
+    <label class="ctl"><span>sampling rate <b id="fsVal">8000 Hz</b></span>
+      <input type="range" id="fs" min="2000" max="24000" step="500" value="8000">
+    </label>
+
+    <label class="ctl"><span>bits <b id="bitsVal">8</b></span>
+      <input type="range" id="bits" min="1" max="16" step="1" value="8">
+    </label>
+
+    <label class="ctl"><span>channel noise <b id="noiseVal">0%</b></span>
+      <input type="range" id="noise" min="0" max="100" step="1" value="0">
+    </label>
+
+    <button id="aa" aria-pressed="true">anti-alias filter: ON</button>
+    <button id="recon" aria-pressed="true">reconstruct: smooth</button>
+    <button id="play" aria-pressed="false">🔇 speaker off</button>
+  </div>
+</header>
+
+<main>
+
+  <p class="legend"><span class="swatch-a"></span> warm = the physical world, continuous &nbsp;·&nbsp;
+     <span class="swatch-d"></span> cool = numbers, discrete and copyable exactly</p>
+
+  <section class="stage">
+    <h2>1 · The air — an analog signal <span class="readout" id="r1"></span></h2>
+    <p class="why">Continuous. A value at every instant, to unlimited precision. This is what the microphone's diaphragm feels.</p>
+    <canvas id="c1"></canvas>
+  </section>
+  <div class="arrow">↓ &nbsp;sample: make <b>time</b> discrete</div>
+
+  <section class="stage">
+    <h2>2 · The sampler — <span class="readout" id="r2">8000 Hz, Nyquist 4000 Hz</span></h2>
+    <p class="why">We keep only the dots and know <em>nothing</em> about the gaps between them.</p>
+    <canvas id="c2"></canvas>
+    <div class="alert" id="aliasAlert"></div>
+  </section>
+  <div class="arrow">↓ &nbsp;quantize: make <b>amplitude</b> discrete</div>
+
+  <section class="stage">
+    <h2>3 · The quantizer — <span class="readout" id="r3"></span></h2>
+    <p class="why">Every dot is dragged to the nearest grid line. The error is never zero, and never larger than half a step.</p>
+    <canvas id="c3"></canvas>
+  </section>
+  <div class="arrow">↓ &nbsp;encode</div>
+
+  <section class="stage">
+    <h2>4 · The numbers — <span class="readout" id="r4"></span></h2>
+    <p class="why">This is all that exists from here on. Not a voice — a list of integers.</p>
+    <div class="numbers" id="nums">—</div>
+    <div class="bin" id="binary">—</div>
+  </section>
+  <div class="arrow">↓ &nbsp;transmit across the planet</div>
+
+  <section class="stage">
+    <h2>5 · The channel — <span class="readout" id="r5">clean</span></h2>
+    <p class="why">The same noise hits both paths. One of them survives it. That difference is the whole digital age.</p>
+    <div class="split">
+      <div>
+        <div class="lane-label">if we had sent it as an <b>analog</b> voltage — noise sticks, and every repeater adds more</div>
+        <canvas id="c5a"></canvas>
+      </div>
+      <div>
+        <div class="lane-label">sent as <b>bits</b> — each repeater decides 1 or 0 and retransmits a clean signal</div>
+        <canvas id="c5b"></canvas>
+      </div>
+    </div>
+  </section>
+  <div class="arrow">↓ &nbsp;digital-to-analog converter + reconstruction filter</div>
+
+  <section class="stage">
+    <h2>6 · The loudspeaker — <span class="readout" id="r6"></span></h2>
+    <p class="why">Numbers become voltage becomes moving air. Turn the speaker on (headphones!) and you hear every knob above.
+    If adding <em>bits</em> stops improving this number, the bottleneck has moved: it is the sampling rate throwing away
+    the high harmonics, not the quantizer. Raise that instead — and you have just re-derived why the telephone sounds thin.</p>
+    <canvas id="c6"></canvas>
+  </section>
+
+</main>
+
+<footer>
+  <p><b>How to drive it in a lecture.</b> Start in <i>test tone</i> at 1200 Hz with the sampling rate at 8000 Hz — everything behaves.
+  Now drag the tone slider up past 4000 Hz and watch stage 2: the dots start tracing a <i>slower</i> wave than the input, and the red banner
+  tells you what frequency the recording now claims to be. Nothing downstream can ever know. Then set the anti-alias filter to ON/OFF
+  and watch the difference land <i>before</i> the sampler.</p>
+  <p>Next: drop <b>bits</b> to 3 and watch stage 3 turn into a staircase (turn the speaker on to hear the hiss appear). Then raise
+  <b>channel noise</b> and compare the two lanes in stage 5 — the analog copy degrades smoothly, the digital one is perfect, perfect,
+  perfect… then falls off a cliff when the noise is big enough to flip a bit.</p>
+  <p>Press <kbd>Start</kbd> first — browsers only allow audio after a click. The microphone option needs permission and works
+  on <code>localhost</code> or <code>https</code>.</p>
+</footer>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// The whole lecture, running on live audio, in about 300 lines.
+//
+// One ScriptProcessorNode does everything, block by block, in real time:
+//   analog -> [anti-alias] -> sample -> quantize -> bits -> channel -> rebuild
+//
+// Everything you see drawn is the actual data that just went through.
+// ---------------------------------------------------------------------------
+
+const P = {                       // the knobs, read fresh on every audio block
+  source: "voice",
+  toneHz: 1200,
+  fs: 8000,                       // our pretend converter's sampling rate
+  bits: 8,
+  noise: 0,                       // channel noise, 0..1 (fraction of a bit's voltage)
+  antiAlias: true,
+  smooth: true,                   // reconstruction: interpolate vs hold
+  playing: false,
+};
+
+const HW = { rate: 48000, block: 4096 };   // the browser's own audio hardware
+let ctx = null, node = null, gain = null, micStream = null, micSource = null;
+let phase = 0, vibrato = 0;                // for the synthetic sources
+
+// The latest block of each stage, kept for drawing.
+const view = {
+  analog: new Float32Array(HW.block),
+  filtered: new Float32Array(HW.block),
+  sampleIdx: [], sampleVal: [],
+  quantVal: [], levels: 256, step: 1 / 128,
+  ints: [], received: [],
+  analogNoisy: new Float32Array(HW.block),
+  out: new Float32Array(HW.block),
+  bitErrors: 0, totalBits: 0, snr: 0, aliasHz: null,
+};
+
+// ---------------------------------------------------------------------------
+// Sources — what plays the part of "the physical world"
+// ---------------------------------------------------------------------------
+function synthesizeVoice(out, n) {
+  // A vowel: a fundamental with harmonics shaped by two formants, wobbling
+  // slightly the way a real voice does. Rich enough to alias convincingly.
+  const f0 = 120 + 6 * Math.sin(vibrato);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let h = 1; h <= 12; h++) {
+      const f = f0 * h;
+      const formant = Math.exp(-Math.pow((f - 700) / 480, 2)) +
+                      0.7 * Math.exp(-Math.pow((f - 1220) / 560, 2)) +
+                      0.25 * Math.exp(-Math.pow((f - 2600) / 900, 2));
+      s += formant * Math.sin(2 * Math.PI * f * (phase + i) / HW.rate) / h;
+    }
+    out[i] = 0.55 * s;
+  }
+  phase += n; vibrato += (n / HW.rate) * 2 * Math.PI * 5;
+}
+
+function synthesizeTone(out, n) {
+  for (let i = 0; i < n; i++) {
+    out[i] = 0.75 * Math.sin(2 * Math.PI * P.toneHz * (phase + i) / HW.rate);
+  }
+  phase += n;
+}
+
+// ---------------------------------------------------------------------------
+// The pipeline itself
+// ---------------------------------------------------------------------------
+function movingAverage(src, dst, n, k) {      // our crude anti-alias filter
+  const half = k >> 1;
+  for (let i = 0; i < n; i++) {
+    let sum = 0, count = 0;
+    for (let j = -half; j <= half; j++) {
+      const idx = i + j;
+      if (idx >= 0 && idx < n) { sum += src[idx]; count++; }
+    }
+    dst[i] = sum / count;
+  }
+}
+
+function processBlock(input, output, n) {
+  // --- stage 1: the analog world ------------------------------------------
+  if (P.source === "mic" && input) output.set(input.subarray(0, n));
+  else if (P.source === "tone") synthesizeTone(output, n);
+  else synthesizeVoice(output, n);
+  view.analog.set(output.subarray(0, n));
+
+  // --- stage 2: anti-alias filter, THEN sample ----------------------------
+  const factor = Math.max(1, Math.round(HW.rate / P.fs));
+  const realFs = HW.rate / factor;
+  if (P.antiAlias && factor > 1) {
+    movingAverage(view.analog, view.filtered, n, factor % 2 ? factor : factor + 1);
+  } else {
+    view.filtered.set(view.analog.subarray(0, n));
+  }
+
+  const idx = [], val = [];
+  for (let i = 0; i < n; i += factor) { idx.push(i); val.push(view.filtered[i]); }
+  view.sampleIdx = idx; view.sampleVal = val;
+
+  // --- stage 3: quantize ---------------------------------------------------
+  const levels = Math.pow(2, P.bits);
+  const step = 2 / levels;                       // range -1 .. +1
+  const half = levels / 2;
+  const ints = [], quant = [];
+  for (const v of val) {
+    let code = Math.round(v / step);              // the integer we will send
+    code = Math.max(-half, Math.min(half - 1, code));   // clipping, as a real ADC clips
+    ints.push(code);
+    quant.push(code * step);
+  }
+  view.quantVal = quant; view.ints = ints;
+  view.levels = levels; view.step = step;
+
+  // --- stage 5: down the wire ---------------------------------------------
+  // Each bit is sent as a voltage. Noise is added. The receiver DECIDES 1 or 0.
+  // Small noise is erased completely; big enough noise flips a bit outright.
+  const received = [], mask = levels - 1;
+  let errors = 0;
+  for (const code of ints) {
+    const unsigned = (code + half) & mask;
+    let got = 0;
+    for (let b = 0; b < P.bits; b++) {
+      const sent = (unsigned >> b) & 1;
+      const voltage = sent + (Math.random() * 2 - 1) * P.noise;   // noise on the wire
+      const decided = voltage > 0.5 ? 1 : 0;                       // regeneration
+      if (decided !== sent) errors++;
+      got |= decided << b;
+    }
+    received.push(got - half);
+  }
+  view.bitErrors = errors; view.totalBits = ints.length * P.bits;
+  view.received = received;
+
+  // For comparison: the same noise added to an analog copy, where it STAYS.
+  for (let i = 0; i < n; i++) {
+    view.analogNoisy[i] = view.analog[i] + (Math.random() * 2 - 1) * P.noise * 0.5;
+  }
+
+  // --- stage 6: back to a continuous signal --------------------------------
+  for (let i = 0; i < n; i++) {
+    const pos = i / factor;
+    const lo = Math.floor(pos);
+    let v;
+    if (!P.smooth || lo + 1 >= received.length) {
+      v = (received[Math.min(lo, received.length - 1)] || 0) * step;   // hold
+    } else {
+      const w = pos - lo;                                              // interpolate
+      v = ((1 - w) * received[lo] + w * received[lo + 1]) * step;
+    }
+    output[i] = Math.max(-1, Math.min(1, v));
+  }
+  view.out.set(output.subarray(0, n));
+
+  // --- measurements --------------------------------------------------------
+  let ps = 0, pn = 0;
+  for (let i = 0; i < n; i++) { ps += view.analog[i] ** 2; pn += (output[i] - view.analog[i]) ** 2; }
+  view.snr = pn > 0 ? 10 * Math.log10(ps / pn) : Infinity;
+
+  if (P.source === "tone") {
+    const f = P.toneHz;
+    const folded = Math.abs(f - realFs * Math.round(f / realFs));
+    view.aliasHz = Math.abs(folded - f) > 1 ? folded : null;
+  } else {
+    view.aliasHz = null;
+  }
+  view.realFs = realFs;
+}
+
+// ---------------------------------------------------------------------------
+// Audio plumbing
+// ---------------------------------------------------------------------------
+async function start() {
+  if (ctx) { await ctx.resume(); return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: HW.rate });
+  HW.rate = ctx.sampleRate;
+
+  node = ctx.createScriptProcessor(HW.block, 1, 1);
+  node.onaudioprocess = (e) => {
+    const inBuf = e.inputBuffer.getChannelData(0);
+    const outBuf = e.outputBuffer.getChannelData(0);
+    processBlock(inBuf, outBuf, outBuf.length);
+  };
+
+  gain = ctx.createGain();
+  gain.gain.value = P.playing ? 1 : 0;      // silent, but still running
+  node.connect(gain).connect(ctx.destination);
+
+  document.getElementById("start").textContent = "● running";
+  document.getElementById("start").classList.remove("primary");
+}
+
+async function useMic(on) {
+  if (on && !micStream) {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      micSource = ctx.createMediaStreamSource(micStream);
+      micSource.connect(node);
+    } catch (err) {
+      alert("No microphone: " + err.message +
+            "\n\nThe page needs to be served over localhost or https. " +
+            "Use the synthetic voice or test tone instead — they demonstrate everything.");
+      document.getElementById("source").value = "voice";
+      P.source = "voice";
+    }
+  }
+  if (!on && micSource) { micSource.disconnect(); }
+  else if (on && micSource) { micSource.connect(node); }
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+const css = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
+
+function fit(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+    canvas.width = w * dpr; canvas.height = h * dpr;
+  }
+  const g = canvas.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  return { g, w, h };
+}
+
+const WINDOW = 1200;             // how many hardware samples we draw (~25 ms)
+
+function drawWave(canvas, data, colour, width = 1.5) {
+  const { g, w, h } = fit(canvas);
+  g.strokeStyle = colour; g.lineWidth = width; g.beginPath();
+  for (let i = 0; i < WINDOW; i++) {
+    const x = (i / WINDOW) * w, y = h / 2 - (data[i] || 0) * h * 0.45;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.stroke();
+  return { g, w, h };
+}
+
+function drawStage2(canvas) {
+  const { g, w, h } = drawWave(canvas, view.analog, css("--analog"), 1);
+  g.fillStyle = css("--digital");
+  g.strokeStyle = css("--digital"); g.lineWidth = 1;
+  for (let k = 0; k < view.sampleIdx.length; k++) {
+    const i = view.sampleIdx[k];
+    if (i >= WINDOW) break;
+    const x = (i / WINDOW) * w, y = h / 2 - view.sampleVal[k] * h * 0.45;
+    g.beginPath(); g.moveTo(x, h / 2); g.lineTo(x, y); g.stroke();
+    g.beginPath(); g.arc(x, y, 2.6, 0, 7); g.fill();
+  }
+}
+
+function drawStage3(canvas) {
+  const { g, w, h } = fit(canvas);
+  g.strokeStyle = css("--grid"); g.lineWidth = 1;              // the allowed levels
+  if (view.levels <= 64) {
+    for (let l = -view.levels / 2; l <= view.levels / 2; l++) {
+      const y = h / 2 - l * view.step * h * 0.45;
+      g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+    }
+  }
+  g.strokeStyle = css("--digital"); g.lineWidth = 2; g.beginPath();  // the staircase
+  const factor = Math.max(1, Math.round(HW.rate / P.fs));
+  for (let k = 0; k < view.quantVal.length; k++) {
+    const i = view.sampleIdx[k]; if (i >= WINDOW) break;
+    const x0 = (i / WINDOW) * w, x1 = ((i + factor) / WINDOW) * w;
+    const y = h / 2 - view.quantVal[k] * h * 0.45;
+    k ? g.lineTo(x0, y) : g.moveTo(x0, y);
+    g.lineTo(x1, y);
+  }
+  g.stroke();
+}
+
+function drawStage5(canvasA, canvasB) {
+  drawWave(canvasA, view.analogNoisy, css("--analog"), 1);
+  const { g, w, h } = fit(canvasB);
+  g.strokeStyle = view.bitErrors ? css("--warn") : css("--digital");
+  g.lineWidth = 2; g.beginPath();
+  const factor = Math.max(1, Math.round(HW.rate / P.fs));
+  for (let k = 0; k < view.received.length; k++) {
+    const i = view.sampleIdx[k]; if (i >= WINDOW) break;
+    const x0 = (i / WINDOW) * w, x1 = ((i + factor) / WINDOW) * w;
+    const y = h / 2 - view.received[k] * view.step * h * 0.45;
+    k ? g.lineTo(x0, y) : g.moveTo(x0, y);
+    g.lineTo(x1, y);
+  }
+  g.stroke();
+}
+
+function refresh() {
+  drawWave(document.getElementById("c1"), view.analog, css("--analog"), 1.8);
+
+  let peak = 0;
+  for (let i = 0; i < WINDOW; i++) peak = Math.max(peak, Math.abs(view.analog[i]));
+  document.getElementById("r1").textContent =
+    (P.source === "mic" && peak < 0.002) ? "— silent: is the right microphone selected?"
+                                         : `— peak ${peak.toFixed(2)}`;
+  drawStage2(document.getElementById("c2"));
+  drawStage3(document.getElementById("c3"));
+  drawStage5(document.getElementById("c5a"), document.getElementById("c5b"));
+  drawWave(document.getElementById("c6"), view.out, css("--analog"), 1.8);
+
+  const fs = view.realFs || P.fs;
+  document.getElementById("r2").textContent =
+    `${Math.round(fs)} Hz — Nyquist ${Math.round(fs / 2)} Hz`;
+  document.getElementById("r3").textContent =
+    `${P.bits} bits = ${view.levels.toLocaleString()} levels, step q = ${view.step.toFixed(5)}`;
+  const rate = Math.round(fs) * P.bits;
+  document.getElementById("r4").textContent =
+    `${(rate / 1000).toFixed(1)} kbit/s = ${(rate / 8000).toFixed(1)} kB per second`;
+  document.getElementById("r5").textContent = view.bitErrors
+    ? `${view.bitErrors} of ${view.totalBits} bits flipped — the numbers are now WRONG`
+    : `${view.totalBits} bits sent, 0 flipped — the copy is exact`;
+  document.getElementById("r6").textContent =
+    `output vs original: ${view.snr > 0 ? view.snr.toFixed(1) : "—"} dB`;
+
+  // The numbers themselves, slowed down enough to read.
+  const show = view.received.slice(0, 14);
+  document.getElementById("nums").textContent = show.map(v => String(v).padStart(6)).join(" ");
+  document.getElementById("binary").textContent = show.slice(0, 8)
+    .map(v => ((v + view.levels / 2) & (view.levels - 1)).toString(2).padStart(P.bits, "0")).join("  ");
+
+  const alert = document.getElementById("aliasAlert");
+  if (view.aliasHz !== null) {
+    alert.classList.add("on");
+    alert.textContent = `⚠ ALIASING — your ${P.toneHz} Hz tone is above the Nyquist limit. `
+      + `It is being recorded as ${Math.round(view.aliasHz)} Hz, and no software downstream can ever tell.`;
+  } else {
+    alert.classList.remove("on");
+    alert.textContent = "";
+  }
+  requestAnimationFrame(refresh);
+}
+requestAnimationFrame(refresh);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const bind = (id, fn) => document.getElementById(id).addEventListener("input", fn);
+
+document.getElementById("start").addEventListener("click", async () => {
+  await start();
+  if (P.source === "mic") await useMic(true);
+});
+
+bind("source", async (e) => {
+  P.source = e.target.value;
+  document.getElementById("toneCtl").style.visibility = P.source === "tone" ? "visible" : "hidden";
+  if (ctx) await useMic(P.source === "mic");
+});
+bind("tone", e => { P.toneHz = +e.target.value; document.getElementById("toneVal").textContent = P.toneHz + " Hz"; });
+bind("fs", e => { P.fs = +e.target.value; document.getElementById("fsVal").textContent = P.fs + " Hz"; });
+bind("bits", e => { P.bits = +e.target.value; document.getElementById("bitsVal").textContent = P.bits; });
+bind("noise", e => { P.noise = +e.target.value / 100; document.getElementById("noiseVal").textContent = e.target.value + "%"; });
+
+document.getElementById("aa").addEventListener("click", (e) => {
+  P.antiAlias = !P.antiAlias;
+  e.target.setAttribute("aria-pressed", P.antiAlias);
+  e.target.textContent = "anti-alias filter: " + (P.antiAlias ? "ON" : "OFF");
+});
+document.getElementById("recon").addEventListener("click", (e) => {
+  P.smooth = !P.smooth;
+  e.target.setAttribute("aria-pressed", P.smooth);
+  e.target.textContent = "reconstruct: " + (P.smooth ? "smooth" : "staircase");
+});
+document.getElementById("play").addEventListener("click", (e) => {
+  P.playing = !P.playing;
+  if (gain) gain.gain.value = P.playing ? 1 : 0;
+  e.target.setAttribute("aria-pressed", P.playing);
+  e.target.textContent = P.playing ? "🔊 speaker on" : "🔇 speaker off";
+});
+
+document.getElementById("toneCtl").style.visibility = "hidden";
+</script>
+</body>
+</html>

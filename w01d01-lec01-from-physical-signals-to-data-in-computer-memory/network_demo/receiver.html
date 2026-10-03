@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Receiver</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="station.css">
+</head>
+<body>
+
+<header>
+  <h1><span class="role dst">destination</span>This computer is the loudspeaker</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="state">connecting…</span></div>
+</header>
+
+<main>
+
+  <div class="card">
+    <div class="controls">
+      <button id="start" class="primary">▶ Start listening</button>
+      <label class="ctl"><span>jitter buffer <b id="jbVal">120 ms</b></span>
+        <input type="range" id="jb" min="0" max="400" step="20" value="120"></label>
+      <button id="recon" aria-pressed="true">reconstruct: smooth</button>
+    </div>
+    <p class="why" style="margin-top:12px">
+      Nothing arrived here but integers. Everything you are about to hear is rebuilt from them.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>What is coming out of the speaker here</h2>
+    <p class="why">The numbers, turned back into a voltage and then into moving air — the other end of the loop.</p>
+    <canvas id="scopeOut"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>How the delivery went</h2>
+    <div class="metrics">
+      <div class="metric"><div class="v" id="mPackets">0</div><div class="k">packets received</div></div>
+      <div class="metric bad"><div class="v" id="mLost">0</div><div class="k">lost on the way</div></div>
+      <div class="metric"><div class="v" id="mRate">—</div><div class="k">arriving, kbit/s</div></div>
+      <div class="metric"><div class="v" id="mJitter">—</div><div class="k">jitter, ms</div></div>
+      <div class="metric warm"><div class="v" id="mBuffer">—</div><div class="k">buffered, ms</div></div>
+      <div class="metric bad"><div class="v" id="mStarve">0</div><div class="k">gaps in playback</div></div>
+      <div class="metric bad"><div class="v" id="mDiscard">0</div><div class="k">samples too late to use</div></div>
+    </div>
+    <p class="tip" id="tip" style="margin-top:12px">
+      A packet that arrives late is as useless as one that never arrives — you cannot play sound
+      that should have been played already. That is why the buffer exists, and why it costs delay.
+      Drag the buffer down towards zero and listen: the gaps you hear are packets that arrived
+      after their moment had passed. Drag it up and the sound is smooth, but you are now further
+      behind the person talking. Every phone call on earth is somewhere on that trade.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>The last numbers to arrive</h2>
+    <p class="why">These integers travelled across the room over WiFi. They are the entire message.</p>
+    <div class="scroller"><div id="nums" style="font-family:'IBM Plex Mono',monospace;color:var(--digital);white-space:nowrap">—</div></div>
+  </div>
+
+</main>
+
+<script src="wire.js"></script>
+<script>
+"use strict";
+
+const P = { jitterMs: 120, smooth: true };
+let ctx = null, node = null;
+let queue = [];                       // the jitter buffer: samples waiting to be played
+let fs = 8000, bits = 8, peak = 127;
+let received = 0, lost = 0, starved = 0, discarded = 0, bytes = 0, lastSeq = null;
+let lastRecv = 0, lastBytes = 0, lastT = performance.now(), jitter = 0, lastArrival = 0, lastGap = 0;
+const outView = new Float32Array(2048);
+let phase = 0;                        // fractional read position, for interpolation
+let primed = false;                   // has the jitter buffer filled its cushion yet?
+
+const drawOut = Wire.scope(document.getElementById("scopeOut"));
+
+Wire.connect("receiver", onPacket, (s) => {
+  document.getElementById("state").textContent = s;
+  document.getElementById("dot").classList.toggle("on", s === "connected");
+});
+
+function onPacket(p) {
+  received++; bytes += p.bytes;
+  fs = p.fs; bits = p.bits;
+  peak = Math.pow(2, bits - 1) - 1;
+
+  // sequence numbers are how the receiver knows something never arrived
+  if (lastSeq !== null) {
+    const expected = (lastSeq + 1) & 0xffff;
+    if (p.seq !== expected) {
+      const gap = (p.seq - expected) & 0xffff;
+      if (gap < 1000) lost += gap;               // a real gap, not a restart
+    }
+  }
+  lastSeq = p.seq;
+
+  // jitter: how uneven the arrivals are, which is what the buffer absorbs
+  const now = performance.now();
+  if (lastArrival) {
+    const gap = now - lastArrival;
+    jitter = 0.9 * jitter + 0.1 * Math.abs(gap - lastGap);
+    lastGap = gap;
+  }
+  lastArrival = now;
+
+  for (let i = 0; i < p.samples.length; i++) queue.push(p.samples[i] / (peak + 1));
+
+  // A buffer that only ever grows would play sound that is minutes old. Real
+  // phone systems cap it and throw the backlog away: in a conversation, late
+  // audio is worthless. This also absorbs the slow drift between two computers'
+  // clocks, which are never exactly equal.
+  const maxQueue = Math.round(fs * (P.jitterMs + 400) / 1000);
+  if (queue.length > maxQueue) {
+    discarded += queue.length - maxQueue;
+    queue.splice(0, queue.length - maxQueue);
+  }
+
+  const shown = Array.from(p.samples.slice(0, 16));
+  document.getElementById("nums").textContent =
+    shown.map(v => String(v).padStart(6)).join(" ") + "   …";
+}
+
+// --- play it back ------------------------------------------------------------
+function onAudio(e) {
+  const out = e.outputBuffer.getChannelData(0);
+  const n = out.length;
+  const step = fs / ctx.sampleRate;              // how fast we walk the queue
+  const holdBack = Math.round(fs * P.jitterMs / 1000);
+
+  // Wait until the buffer has a cushion, THEN play without stopping. Checking
+  // the level on every block instead would leave playback hovering at the
+  // threshold, stuttering in and out — a real and very audible bug.
+  if (!primed) {
+    if (queue.length >= holdBack + 2) primed = true;
+    else { out.fill(0); outView.fill(0); return; }
+  }
+
+  for (let i = 0; i < n; i++) {
+    const idx = Math.floor(phase);
+    if (idx + 1 >= queue.length) {               // ran dry: the packets are not keeping up
+      out.fill(0, i);
+      starved++;
+      primed = false;                            // re-fill the cushion before trying again
+      break;
+    }
+    if (P.smooth) {
+      const w = phase - idx;
+      out[i] = (1 - w) * queue[idx] + w * queue[idx + 1];   // reconstruction filter
+    } else {
+      out[i] = queue[idx];                                  // the DAC's raw staircase
+    }
+    phase += step;
+  }
+
+  const consumed = Math.floor(phase);
+  queue.splice(0, consumed);
+  phase -= consumed;
+  outView.set(out.subarray(0, Math.min(n, outView.length)));
+}
+
+async function start() {
+  if (ctx) { await ctx.resume(); return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  node = ctx.createScriptProcessor(2048, 1, 1);
+  node.onaudioprocess = onAudio;
+  node.connect(ctx.destination);
+  document.getElementById("start").textContent = "● playing";
+  document.getElementById("start").classList.remove("primary");
+}
+
+function tick() {
+  drawOut(outView, getComputedStyle(document.body).getPropertyValue("--analog").trim(), 1200);
+
+  const now = performance.now(), dt = (now - lastT) / 1000;
+  if (dt >= 0.5) {
+    document.getElementById("mPackets").textContent = received.toLocaleString();
+    document.getElementById("mLost").textContent = lost.toLocaleString();
+    document.getElementById("mRate").textContent = ((bytes - lastBytes) * 8 / 1000 / dt).toFixed(1);
+    document.getElementById("mJitter").textContent = jitter.toFixed(1);
+    document.getElementById("mBuffer").textContent = (queue.length / fs * 1000).toFixed(0);
+    document.getElementById("mStarve").textContent = starved.toLocaleString();
+    document.getElementById("mDiscard").textContent = discarded.toLocaleString();
+    lastRecv = received; lastBytes = bytes; lastT = now;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+document.getElementById("start").addEventListener("click", start);
+document.getElementById("jb").addEventListener("input", (e) => {
+  P.jitterMs = +e.target.value;
+  document.getElementById("jbVal").textContent = P.jitterMs + " ms";
+});
+document.getElementById("recon").addEventListener("click", (e) => {
+  P.smooth = !P.smooth;
+  e.target.setAttribute("aria-pressed", P.smooth);
+  e.target.textContent = "reconstruct: " + (P.smooth ? "smooth" : "staircase");
+});
+</script>
+</body>
+</html>
