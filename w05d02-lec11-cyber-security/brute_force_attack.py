@@ -11,10 +11,10 @@ SUBSTITUTIONS = {
     'f': ['f', 'F'],           'F': ['f', 'F'],
     'g': ['g', 'G'],           'G': ['g', 'G'],
     'h': ['h', 'H'],           'H': ['h', 'H'],
-    'i': ['i', 'I', '1'],      'I': ['i', 'I', '1'],
-    'j': ['j', 'J'],           'J': ['j', 'J'],
+    'i': ['i', 'I', '1'],      'I': ['i', 'I', '1', '!'],
+    'j': ['j', 'J', '!'],           'J': ['j', 'J', '!'],
     'k': ['k', 'K'],           'K': ['k', 'K'],
-    'l': ['l', 'L', '1'],      'L': ['l', 'L', '1'],
+    'l': ['l', 'L', '1', '!'],  'L': ['l', 'L', '1', '!'],
     'm': ['m', 'M'],           'M': ['m', 'M'],
     'n': ['n', 'N'],           'N': ['n', 'N'],
     'o': ['o', 'O', '0'],      'O': ['o', 'O', '0'],
@@ -46,8 +46,10 @@ def read_passwords(file_name: str) -> list:
     with open(file_name, "r") as fh:
         return [line.strip() for line in fh]
 
-def crack_sha1(target_hash: str, file_name: str = "10k-most-common.txt") -> str:
-    target_hash = target_hash.strip()
+def crack_sha1(password: str, file_name: str = "Pwdb_top-10000000.txt") -> str:
+
+    password = password.strip()
+    target_hash = hashlib.sha1(password.encode()).hexdigest()
     words = read_passwords(file_name)
     attempts = 0
 
@@ -59,6 +61,6 @@ def crack_sha1(target_hash: str, file_name: str = "10k-most-common.txt") -> str:
             candidate_hash = hashlib.sha1(candidate.encode()).hexdigest()
 
             if candidate_hash == target_hash:
-                return f"Password cracked: '{candidate}' Password: '{word}') in {attempts} attempts"
+                return f"Password cracked: '{candidate}' in {attempts} attempts"
 
     return f"Not found. Total attempts: {attempts}"
