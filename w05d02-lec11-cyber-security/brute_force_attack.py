@@ -48,8 +48,6 @@ def read_passwords(file_name: str) -> list:
 
 def crack_sha1(password: str, file_name: str = "Pwdb_top-10000000.txt") -> str:
 
-    password = password.strip()
-    target_hash = hashlib.sha1(password.encode()).hexdigest()
     words = read_passwords(file_name)
     attempts = 0
 
@@ -60,7 +58,7 @@ def crack_sha1(password: str, file_name: str = "Pwdb_top-10000000.txt") -> str:
             attempts += 1
             candidate_hash = hashlib.sha1(candidate.encode()).hexdigest()
 
-            if candidate_hash == target_hash:
+            if candidate_hash == password:
                 return f"Password cracked: '{candidate}' in {attempts} attempts"
 
     return f"Not found. Total attempts: {attempts}"
