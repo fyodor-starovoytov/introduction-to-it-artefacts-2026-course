@@ -1,0 +1,9 @@
+python3 .\test_leap.py
+Traceback (most recent call last):
+  File "C:\course-labs\lab1\test_leap.py", line 17, in <module>
+    assert result is False, "got " + str(result)
+           ^^^^^^^^^^^^^^^
+AssertionError: got True
+
+python3 .\test_leap.py
+All tests passed
