@@ -46,7 +46,7 @@ def read_passwords(file_name: str) -> list:
     with open(file_name, "r", encoding="utf-8", errors="ignore") as fh:
         return [line.strip() for line in fh]
 
-def crack_sha1(password: str, file_name: str = "Pwdb_top-10000000.txt") -> str:
+def crack_sha1(password: str, file_name: str = "100k-most-used-passwords-NCSC.txt") -> str:
 
     words = read_passwords(file_name)
     attempts = 0
