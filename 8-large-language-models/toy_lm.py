@@ -11,11 +11,11 @@
 import argparse, collections, random, re
 
 p = argparse.ArgumentParser()
-p.add_argument("--corpus", default="corpus.txt", help="the text it learns from (default: the Security Fundamentals lecture, the Bible, )")
+p.add_argument("--corpus", default="corpus.txt", help="the text it learns from (default: the Security Fundamentals lecture, the Bible and the Constitution of Finland (in English))")
 p.add_argument("--context", type=int, default=2, help="how many previous words it looks at (1 or 2)")
 p.add_argument("--next", metavar="WORDS", help="show the most likely next words after WORDS")
 p.add_argument("--write", metavar="START", help="write text starting with START")
-p.add_argument("--words", type=int, default=40)
+p.add_argument("--words", type=int, default=80)
 p.add_argument("--temperature", type=float, default=1.0)
 p.add_argument("--seed", type=int, default=None, help="same seed = same text (randomness made repeatable)")
 a = p.parse_args()
