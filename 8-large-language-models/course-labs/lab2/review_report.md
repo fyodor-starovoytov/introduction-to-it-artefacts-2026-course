@@ -65,7 +65,7 @@ Both calls return a computed array rather than rejecting an invalid size.
 I did not find additional clearly demonstrable behavioral defects in the provided files.
 ```
 
-The claim: Program will crash if user inputs non-integer value.
+1. Claim: Program will crash if user inputs non-integer value.
 
 Expected result: CRASH and a ValueError
 After the test:
@@ -76,3 +76,16 @@ ValueError: invalid literal for int() with base 10: '.2'
 ```
 
 Verdict: Confirmed
+
+No additional AI help used.
+Basic try and except logic implemented.
+
+2. Claim: The logic.py can accept negative values therefore checking for value to be greater than 0 is unnessecary
+
+Expected result: an empty graph in the result
+After the test: The graph returned to be empty therefore the claim if Refuted.
+
+Verdict: Refuted
+
+The AI gave 3 comments on the code, it pointed at 3 possible critical errors. However I've already known those issues, the
+task just assumed that the user won't input wrong values, therefore those cases didn't need a fix before. Now they are fixed!
