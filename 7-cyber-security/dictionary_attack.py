@@ -43,7 +43,7 @@ def generate_variations(word: str) -> set:
     return variations
 
 def read_passwords(file_name: str) -> list:
-    with open(file_name, "r") as fh:
+    with open(file_name, "r", encoding="utf-8", errors="ignore") as fh:
         return [line.strip() for line in fh]
 
 def crack_sha1(password: str, file_name: str = "Pwdb_top-10000000.txt") -> str:
